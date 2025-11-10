@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from src.io_excel import read_workbook, clean_codes
-from src.calc import calc_cmp, cost_per_product, repartition_charges
+from src.calc import build_tableau_pilotage
 
 st.set_page_config(page_title="Regraga - Mini application coûts", layout="wide")
 st.title("Regraga - Mini application coûts")
