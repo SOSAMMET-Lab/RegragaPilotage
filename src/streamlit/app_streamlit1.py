@@ -1,7 +1,9 @@
-import streamlit as st
-import pandas as pd
-from src.io_excel import read_workbook, clean_codes
-from src.calc import build_tableau_pilotage
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from io_excel import read_workbook, clean_codes
+from calc import build_tableau_pilotage
 
 st.set_page_config(page_title="Regraga - Mini application coûts", layout="wide")
 st.title("Regraga - Mini application coûts")
