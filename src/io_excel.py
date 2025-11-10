@@ -1,29 +1,59 @@
+# src/io_excel.py
+
 import pandas as pd
 
-def read_workbook(path_or_buffer):
+def read_workbook(file_like):
     """
-    Lit l'Excel et retourne un dict de DataFrame pour les feuilles attendues.
-    path_or_buffer peut être un chemin ou un buffer uploadé par Streamlit.
+    Lit un fichier Excel (chemin ou file-like) et retourne un dict de DataFrames.
+    Attendu: feuilles principales: tbl_Produits, tbl_Ventes, tbl_Recettes (si présentes).
     """
-    xls = pd.read_excel(path_or_buffer, sheet_name=None, engine="openpyxl")
-    # noms de feuilles attendues (ajoute/retire selon ton fichier)
-    expected = [
-        "tbl_Ventes","tbl_Recettes","tbl_Stock","tbl_Produits",
-        "tbl_Charges_Fixes","tbl_Achats","tbl_Sorties","Référentiels",
-        "tbl_Couts","tbl_PtDj&Sup","tbl_PtDj","tbl_PtDj_sup"
-    ]
-    out = {}
-    for name in expected:
-        out[name] = xls.get(name, pd.DataFrame()).copy()
-    # Ajoute toutes les feuilles non listées aussi (si besoin)
-    for name, df in xls.items():
-        if name not in out:
-            out[name] = df.copy()
-    return out
+    try:
+        xls = pd.read_excel(file_like, sheet_name=None, engine="openpyxl")
+    except Exception as e:
+        raise RuntimeError(f"Erreur lecture Excel: {e}")
 
-def clean_codes(df, col):
-    """Nettoyage basique d'une colonne code : strip, normaliser espaces"""
+    # Normaliser noms des feuilles clés
+    data = {}
+    if "tbl_Produits" in xls:
+        data["produits"] = xls["tbl_Produits"].copy()
+    else:
+        # si pas trouvée, essayer heuristique
+        for name, df in xls.items():
+            if "produit" in name.lower():
+                data["produits"] = df.copy()
+                break
+
+    if "tbl_Ventes" in xls:
+        data["ventes"] = xls["tbl_Ventes"].copy()
+    else:
+        for name, df in xls.items():
+            if "vente" in name.lower() or "sales" in name.lower():
+                data["ventes"] = df.copy()
+                break
+
+    if "tbl_Recettes" in xls:
+        data["recettes"] = xls["tbl_Recettes"].copy()
+    else:
+        for name, df in xls.items():
+            if "recette" in name.lower() or "recipe" in name.lower():
+                data["recettes"] = df.copy()
+                break
+
+    return data
+
+def clean_codes(df, code_col_candidates=("Code produit","code","code_produit","Code")):
+    """
+    Retourne un DataFrame où la colonne code est normalisée en 'code'.
+    """
+    if df is None:
+        return None
     df = df.copy()
-    if col in df.columns:
-        df[col] = df[col].astype(str).str.strip().str.replace(r'\s+',' ', regex=True)
+    found = None
+    for c in code_col_candidates:
+        if c in df.columns:
+            found = c
+            break
+    if found:
+        df.rename(columns={found: "code"}, inplace=True)
+        df["code"] = df["code"].astype(str).str.strip()
     return df

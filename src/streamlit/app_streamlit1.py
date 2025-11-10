@@ -1,123 +1,99 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-
-st.set_page_config(page_title="Regapp - Mini application costs", layout="wide")
+# src/streamlit/app_streamlit1.py
 
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# rendre accessible le dossier parent 'src' si on exécute depuis src/streamlit
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.append(ROOT)
+
+import streamlit as st
+import pandas as pd
+import plotly.express as px
 
 from io_excel import read_workbook, clean_codes
 from calc import build_tableau_pilotage
 
-st.set_page_config(page_title="Regraga - Mini application coûts", layout="wide")
-st.title("Regraga - Mini application coûts")
+st.set_page_config(page_title="Regraga - Pilotage", layout="wide")
 
-uploaded = st.file_uploader("Chargez votre fichier Excel (Dashboard_Regraga.xlsx) ou glissez‑déposez", type=["xlsx"])
-# Option: lire directement depuis data si tu veux (décommenter)
-# path = "data/Copie de Dashboard Regraga 2026.xlsx"
-# tables = read_workbook(path)
+st.title("Regraga - Tableau de Pilotage")
 
-if uploaded is not None:
-    tables = read_workbook(uploaded)
-    st.success("Fichier chargé")
-    # Affiche feuilles détectées
-    non_empty = [k for k,v in tables.items() if isinstance(v, pd.DataFrame) and not v.empty]
-    st.write("Fichiers chargés:", non_empty)
+uploaded = st.file_uploader("Charge ton fichier Excel (.xlsx) contenant tbl_Produits / tbl_Ventes / tbl_Recettes", type=["xlsx"])
 
-    # Nettoyage codes de base (exemples)
-    for sheet in ['tbl_Ventes','tbl_Recettes','tbl_Stock','tbl_Produits','tbl_Achats','tbl_Charges_Fixes']:
-        if sheet in tables and not tables[sheet].empty:
-            # normaliser noms de colonnes simples si besoin
-            pass
+# zone d'aide et exemple
+with st.expander("Exemple de données / Tutoriel rapide"):
+    st.write("- Feuille `tbl_Produits` : colonnes au minimum `Code produit` ou `code`, `CMP` (coût moyen) ;")
+    st.write("- Feuille `tbl_Ventes` : colonnes au minimum `Code produit` ou `code`, `qte` ou `quantité` ;")
+    st.write("Tu peux charger un fichier d'exemple si tu veux tester.")
 
-    # 1) CMP
-    if 'tbl_Stock' in tables and 'tbl_Achats' in tables and (not tables['tbl_Stock'].empty) and (not tables['tbl_Achats'].empty):
-        cmp_df = calc_cmp(tables['tbl_Stock'], tables['tbl_Achats'])
-        st.subheader("CMP effectif (extrait)")
-        st.dataframe(cmp_df.head(100))
-    else:
-        cmp_df = pd.DataFrame()
-        st.warning("tbl_Stock ou tbl_Achats manquante pour calcul CMP")
+if uploaded is None:
+    st.info("Charge un fichier Excel pour générer le tableau de pilotage. Tu peux aussi tester avec un fichier minimal.")
+    # bouton test
+    if st.button("Générer avec données de test"):
+        # créer jeux de test minimal
+        produits = pd.DataFrame({
+            "code":["P1","P2","P3"],
+            "CMP":[10.0, 5.0, 2.5],
+            "Description":["Prod A","Prod B","Prod C"],
+            "prix_vente":[15.0, 8.0, 4.0]
+        })
+        ventes = pd.DataFrame({
+            "code":["P1","P2","P1"],
+            "qte":[3, 5, 2]
+        })
+        table = build_tableau_pilotage(produits, ventes)
+        st.dataframe(table)
+        csv = table.to_csv(index=False).encode("utf-8")
+        st.download_button("Télécharger CSV", csv, file_name="pilotage_test.csv", mime="text/csv")
+    st.stop()
 
-    # 2) Coût matière par produit
-    if 'tbl_Recettes' in tables and not tables['tbl_Recettes'].empty:
-        cost_prod, merged_lines = cost_per_product(tables['tbl_Recettes'], cmp_df)
-        st.subheader("Coût matière par produit (extrait)")
-        st.dataframe(cost_prod.head(200))
-    else:
-        cost_prod = pd.DataFrame()
-        st.warning("tbl_Recettes manquante")
+# try reading the uploaded file
+try:
+    data = read_workbook(uploaded)
+except Exception as e:
+    st.error(f"Erreur lors de la lecture du fichier Excel: {e}")
+    st.stop()
 
-    # 3) Répartition des charges
-    if 'tbl_Charges_Fixes' in tables and 'tbl_Ventes' in tables and (not tables['tbl_Charges_Fixes'].empty) and (not tables['tbl_Ventes'].empty):
-        ventes_with_charges, total_glob, spec_df = repartition_charges(tables['tbl_Charges_Fixes'], tables['tbl_Ventes'])
-        st.subheader("Ventes avec charges réparties (extrait)")
-        to_show = ['Cde_Prdt','Famille','CA ligne','Charge_Globale_Par_Portion','Charge_Specifique_Par_Portion']
-        present = [c for c in to_show if c in ventes_with_charges.columns]
-        st.dataframe(ventes_with_charges[present].head(200))
-    else:
-        ventes_with_charges = pd.DataFrame()
-        st.warning("tbl_Charges_Fixes ou tbl_Ventes manquante pour répartition charges")
+produits = data.get("produits")
+ventes = data.get("ventes")
 
-    # 4) Tableau final produits
-    if not cost_prod.empty and 'tbl_Produits' in tables and not tables['tbl_Produits'].empty:
-        prod = tables['tbl_Produits'].copy()
-        # garantir colonnes numériques
-        prod['Prix Menu'] = pd.to_numeric(prod.get('Prix Menu',0), errors='coerce').fillna(0)
-        prod = prod.merge(cost_prod, on='Cde_Prdt', how='left').fillna(0)
-        # charges par produit (moyenne par produit depuis ventes_with_charges)
-        if not ventes_with_charges.empty:
-            charges_prod = ventes_with_charges.groupby('Cde_Prdt', as_index=False).agg({
-                'Charge_Globale_Par_Portion':'mean',
-                'Charge_Specifique_Par_Portion':'mean'
-            }).fillna(0)
-            prod = prod.merge(charges_prod, on='Cde_Prdt', how='left').fillna(0)
-        prod['Charges_par_Portion'] = prod.get('Charge_Globale_Par_Portion',0) + prod.get('Charge_Specifique_Par_Portion',0)
-        prod['Coût_Matière_Portion'] = pd.to_numeric(prod.get('Coût_Matière_Portion', prod.get('Coût Moyen Portion',0)), errors='coerce').fillna(0)
-        prod['Marge_brute'] = prod['Prix Menu'] - prod['Coût_Matière_Portion']
-        prod['Marge_nette'] = prod['Marge_brute'] - prod['Charges_par_Portion']
-        st.subheader("Tableau produits final")
-        show_cols = ['Cde_Prdt','Produit','Famille','Coût_Matière_Portion','Prix Menu','Charges_par_Portion','Marge_brute','Marge_nette']
-        present_cols = [c for c in show_cols if c in prod.columns]
-        st.dataframe(prod[present_cols].head(200))
+if produits is None:
+    st.error("Feuille 'tbl_Produits' introuvable ou mal nommée. Vérifie ton fichier Excel.")
+    st.stop()
+if ventes is None:
+    st.warning("Feuille 'tbl_Ventes' introuvable. L'analyse sera limitée.")
 
-        # Export Excel - préparation et bouton
-        import io
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            prod.to_excel(writer, index=False, sheet_name='Produits_Final')
-            if not cmp_df.empty:
-                cmp_df.to_excel(writer, index=False, sheet_name='CMP')
-            if not cost_prod.empty:
-                cost_prod.to_excel(writer, index=False, sheet_name='Coût_Produits')
-            if not ventes_with_charges.empty:
-                ventes_with_charges.to_excel(writer, index=False, sheet_name='Ventes_Charges')
-        st.download_button("Télécharger résultats (Excel)", buffer.getvalue(), file_name="Regraga_Resultats.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    else:
-        st.info("Impossible de construire le tableau final produits (vérifier que tbl_Produits, tbl_Recettes et CMP existent).")
-else:
-    st.info("Chargez votre fichier Excel (Dashboard_Regraga.xlsx) depuis le bouton ci‑dessous.")
-from src.calc import build_tableau_pilotage
+# normaliser codes
+produits = clean_codes(produits)
+ventes = clean_codes(ventes)
 
-# Génération du tableau final de pilotage
-if not cost_prod.empty and not tables['tbl_Produits'].empty:
-    tableau = build_tableau_pilotage(tables['tbl_Produits'], cost_prod, ventes_with_charges)
-    st.subheader("📊 Tableau final de pilotage")
-    colonnes = [
-        'Cde_Prdt','Produit','Famille','Prix Menu','Coût_Matière_Portion',
-        'Charge_Globale_Par_Portion','Charge_Specifique_Par_Portion','Charges_par_Portion',
-        'Marge_brute','Marge_nette','Food cost %','% Charges','Scoring','Seuils Tolérés','Alerte'
-    ]
-    st.dataframe(tableau[colonnes].head(100))
+# build tableau
+try:
+    table_pilotage = build_tableau_pilotage(produits, ventes)
+except Exception as e:
+    st.error(f"Erreur lors du calcul du tableau de pilotage: {e}")
+    st.exception(e)
+    st.stop()
 
-    # Export Excel
-    import io
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        tableau.to_excel(writer, index=False, sheet_name='Tableau_Pilotage')
-        cost_prod.to_excel(writer, index=False, sheet_name='Coût_Produits')
-        ventes_with_charges.to_excel(writer, index=False, sheet_name='Ventes_Charges')
-    st.download_button("📥 Télécharger le tableau de pilotage", buffer.getvalue(), file_name="Pilotage_Regraga.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+st.markdown("### Résultats")
+st.dataframe(table_pilotage)
+
+# graphique simple
+if not table_pilotage.empty:
+    fig = px.bar(table_pilotage, x="code", y="qte", title="Quantités vendues par produit")
+    st.plotly_chart(fig, use_container_width=True)
+
+# bouton export Excel minimal
+from io import BytesIO
+import xlsxwriter
+
+def to_excel(df):
+    output = BytesIO()
+    writer = pd.ExcelWriter(output, engine="xlsxwriter")
+    df.to_excel(writer, index=False, sheet_name="pilotage")
+    writer.save()
+    output.seek(0)
+    return output
+
+st.download_button("Télécharger tableau (Excel)", data=to_excel(table_pilotage), file_name="tableau_pilotage.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
